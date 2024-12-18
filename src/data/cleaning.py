@@ -5,7 +5,11 @@ import matplotlib.pyplot as plt
 import seaborn as sb
 import datetime as dt
 import yaml
+import warnings
+import argparse
 
+parser = argparse.ArgumentParser()
+parser.add_argument('--output', help="filename of the dataframe csv file")
 # Function to handle rare categories in categorical columns
 def group_rare_categories(df, column_name, min_count):
     value_counts = df[column_name].value_counts()
@@ -17,6 +21,18 @@ def get_raw_data_path(config_path='../../configs/cleaning.yaml'):
     with open(config_path, 'r') as file:
         config = yaml.safe_load(file)
     return config.get('raw_data_path')
+
+def fill_mode(df, column_name):
+    mode_df = df.groupby(by=['make', 'model'])[column_name].agg(pd.Series.mode).explode().reset_index()
+    mode_df = mode_df.groupby(by=['make', 'model']).first().reset_index()
+    
+    df = pd.merge(left=df, right=mode_df, on=['make', 'model'], how='left')
+    df[f'{column_name}_x'] = df[f'{column_name}_x'].fillna(df[f'{column_name}_y'])
+    
+    df.drop(f'{column_name}_y', axis=1, inplace=True)
+    df.rename(columns={f'{column_name}_x': column_name}, inplace=True)
+    
+    return df
 
 def clean_car_data():
     # Get the raw data path from the YAML file
@@ -115,11 +131,42 @@ def clean_car_data():
     df.drop(columns=['year', 'vin', 'saledate', 'salesyear', 'price_res', 'seller'], inplace=True)
     # Drop rows with missing values in essential columns like 'make'
     df.dropna(axis=0, subset=['make', 'model'], inplace=True)
-    df.to_csv('../../data/processed/test.csv', index=False)
+    df.dropna(axis = 0, subset = ['model', 'trim'], how = 'all',  inplace = True)
+
+    # Fill column with most common value based on Make-Model
+    columns_to_fill = ['color', 'body', 'transmission', 'interior', 'trim']
+    for column in columns_to_fill:
+        df = fill_mode(df, column)
+
+    # For condition we do median instead of mode
+    warnings.filterwarnings('ignore', category=RuntimeWarning)
+    condition_mean = df.groupby(by = ['car_age', 'odometer'], dropna =True)['condition'].agg(pd.Series.median).reset_index()
+    condition_mean['condition'] = condition_mean['condition'].round(0)
+    df = pd.merge(left=df, right=condition_mean, on=['car_age', 'odometer'], how='left')
+    df['condition_x'] = df['condition_x'].fillna(df['condition_y'])
+    df.drop('condition_y', axis=1, inplace=True)
+    df.rename(columns={'condition_x': 'condition'}, inplace=True)
+
+    # Delete the rest of nans that were not completed 
+    df.dropna(how = 'any', inplace = True)
+
+    # Rename
+    df.rename(columns = {'car_age' : 'age'} ,inplace = True)
 
     return df
 
 if __name__ == '__main__':
+    args = parser.parse_args()
     cleaned_df = clean_car_data()
     # You can export the cleaned dataframe to a file if necessary:
-    cleaned_df.to_csv('../../data/processed/car_prices_after_FE_TESTPY.csv', index=False)
+    if args.output:
+        if args.output.endswith('.csv'):
+            save_path = f'../../data/processed/{args.output}'
+        else:
+            raise ValueError("The output file must have a .csv extension.")
+    else:
+        save_path = '../../data/processed/car_prices_after_FE.csv'
+        print(f"No output filename provided. Using default: {save_path}")
+
+    cleaned_df.to_csv(save_path, index=False)
+    print(f"Cleaned data saved to {save_path}")
